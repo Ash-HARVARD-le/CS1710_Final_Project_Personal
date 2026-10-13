@@ -1,0 +1,178 @@
+<script>
+	import * as d3 from 'd3';
+	import Tooltip from '#lib/Tooltip.svelte';
+	import { moneyShort } from '#lib/data.js';
+
+	// x = median worker pay, y = CEO total pay (both log scales), one dot per company.
+	// The page owns the brush range, hovered sector, and selected company.
+	let {
+		data,
+		brushRange = null,
+		hoveredSector = null,
+		selectedTicker = null,
+		onbrush,
+		onselect
+	} = $props();
+
+	const width = 620;
+	const height = 460;
+	const margin = { top: 15, right: 70, bottom: 50, left: 70 };
+
+	const x = d3.scaleLog().domain([5000, 400000]).range([margin.left, width - margin.right]);
+	const y = d3.scaleLog().domain([100000, 500000000]).range([height - margin.bottom, margin.top]);
+
+	// Reference lines: every company on a line has the same pay ratio.
+	const ratios = [10, 100, 1000];
+	const [xMin, xMax] = x.domain();
+
+	function inBrush(d) {
+		return (
+			!brushRange ||
+			(d.workerPay >= brushRange.worker[0] &&
+				d.workerPay <= brushRange.worker[1] &&
+				d.ceoPay >= brushRange.ceo[0] &&
+				d.ceoPay <= brushRange.ceo[1])
+		);
+	}
+
+	function opacity(d) {
+		if (!inBrush(d)) return 0.12;
+		if (hoveredSector !== null && d.sector !== hoveredSector) return 0.15;
+		return 1;
+	}
+
+	let xAxisG = $state();
+	let yAxisG = $state();
+	let brushG = $state();
+
+	$effect(() => {
+		d3.select(xAxisG).call(d3.axisBottom(x).ticks(5, moneyShort));
+	});
+	$effect(() => {
+		d3.select(yAxisG).call(d3.axisLeft(y).ticks(6, moneyShort));
+	});
+
+	// D3 manages the brush inside its own <g>. On release, convert the pixel box to
+	// pay values through the scales and report it to the page (null = cleared).
+	$effect(() => {
+		const brush = d3
+			.brush()
+			.extent([
+				[margin.left, margin.top],
+				[width - margin.right, height - margin.bottom]
+			])
+			.on('end', (event) => {
+				if (!event.selection) return onbrush(null);
+				const [[x0, y0], [x1, y1]] = event.selection;
+				onbrush({ worker: [x.invert(x0), x.invert(x1)], ceo: [y.invert(y1), y.invert(y0)] });
+			});
+		d3.select(brushG).call(brush);
+	});
+
+	let wrapper;
+	let tip = $state(null);
+
+	function showTip(event, company) {
+		const box = wrapper.getBoundingClientRect();
+		const px = event.clientX - box.left;
+		tip = { company, x: px, y: event.clientY - box.top, flip: px > box.width - 240 };
+	}
+
+	let selected = $derived(data.find((d) => d.ticker === selectedTicker));
+</script>
+
+<div class="scatter" bind:this={wrapper}>
+	<svg viewBox="0 0 {width} {height}">
+		<defs>
+			<clipPath id="plot-area">
+				<rect
+					x={margin.left}
+					y={margin.top}
+					width={width - margin.left - margin.right}
+					height={height - margin.top - margin.bottom}
+				/>
+			</clipPath>
+		</defs>
+
+		<g clip-path="url(#plot-area)">
+			{#each ratios as r (r)}
+				<line class="ref" x1={x(xMin)} y1={y(xMin * r)} x2={x(xMax)} y2={y(xMax * r)} />
+			{/each}
+		</g>
+		{#each ratios as r (r)}
+			<text class="ref-label" x={width - margin.right + 4} y={y(xMax * r)} dominant-baseline="middle">
+				{r.toLocaleString()}:1
+			</text>
+		{/each}
+
+		<!-- The brush sits under the dots: drag on empty space to select, click empty space to clear. -->
+		<g bind:this={brushG} />
+
+		{#each data as d (d.ticker)}
+			<circle
+				role="presentation"
+				cx={x(d.workerPay)}
+				cy={y(d.ceoPay)}
+				r="4"
+				fill="#2563eb"
+				fill-opacity="0.6"
+				stroke="#1e3a8a"
+				stroke-width="0.5"
+				opacity={opacity(d)}
+				onmouseenter={(e) => showTip(e, d)}
+				onmousemove={(e) => showTip(e, d)}
+				onmouseleave={() => (tip = null)}
+				onclick={() => onselect(d.ticker)}
+			/>
+		{/each}
+
+		<!-- Ring around the clicked company, drawn last so it stays on top. -->
+		{#if selected}
+			<circle class="selected" cx={x(selected.workerPay)} cy={y(selected.ceoPay)} r="8" />
+		{/if}
+
+		<g bind:this={xAxisG} transform="translate(0, {height - margin.bottom})" />
+		<g bind:this={yAxisG} transform="translate({margin.left}, 0)" />
+
+		<text class="axis-label" x={(margin.left + width - margin.right) / 2} y={height - 10}>
+			Median worker pay (log scale)
+		</text>
+		<text class="axis-label" transform="rotate(-90)" x={-(margin.top + height - margin.bottom) / 2} y={16}>
+			CEO total pay (log scale)
+		</text>
+	</svg>
+	<Tooltip {tip} />
+</div>
+
+<style>
+	.scatter {
+		position: relative;
+	}
+	svg {
+		width: 100%;
+		height: auto;
+		display: block;
+	}
+	circle {
+		cursor: pointer;
+	}
+	.selected {
+		fill: none;
+		stroke: #dc2626;
+		stroke-width: 2.5;
+		pointer-events: none;
+	}
+	.ref {
+		stroke: #94a3b8;
+		stroke-dasharray: 4 4;
+	}
+	.ref-label {
+		font-size: 11px;
+		fill: #64748b;
+	}
+	.axis-label {
+		font-size: 13px;
+		text-anchor: middle;
+		fill: #333;
+	}
+</style>
